@@ -1,7 +1,4 @@
-"""SQLite 数据访问层。
-
-本阶段（模块 0）只负责按 docs/数据字典.md 建出全部八张空表与索引（幂等）。
-查询函数（get_videos / get_delta_table 等）在模块二（清洗入库）补充。
+"""SQLite 数据访问层：建表（幂等）+ 数据查询函数。
 
 字段口径唯一真源：docs/数据字典.md。表结构不得在此处擅自修改。
 """
@@ -15,10 +12,7 @@ import pandas as pd
 
 from bilibili_analysis.core import config
 
-# ---------------------------------------------------------------------------
-# 建表 SQL（字段名与类型严格对齐数据字典）
-# 注意：`like` 是 SQLite 关键字，作列名时用双引号包裹，查询时同理。
-# ---------------------------------------------------------------------------
+# 建表 SQL（字段对齐数据字典；`like` 是 SQLite 关键字，作列名需双引号包裹）
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS videos (
     bvid             TEXT PRIMARY KEY,

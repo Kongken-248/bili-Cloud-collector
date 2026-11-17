@@ -1,14 +1,8 @@
 """弹幕 / 评论本地采集器（登录态）。
 
-对全部 head 视频（榜单视频，来源 data/raw/video/*.json 的详情落盘）：
-- 弹幕：dm/web/view 拿声明数 + 分段配置，再按 cid 逐段拉 seg.so（protobuf 二进制），
-  写 danmaku 表 + danmaku_fetch_log 对账（declared/got/ratio/seg_count）；
-- 评论：按 aid 拉一级热评（主楼，sort=2）封顶 N，楼中楼仅保留 rcount 不采正文，
-  写 comments 表 + comment_fetch_log 对账。
-
-正文只落本地库（data/bilibili.db），不入云端仓库。
-
-测试参数：--limit 限制视频数、--no-comment 跳过评论。
+- 弹幕：dm/web/view 拿分段配置，按 cid 逐段拉 seg.so（protobuf 二进制），写 danmaku 表 + 对账；
+- 评论：按 aid 拉一级热评（主楼）封顶 N，楼中楼仅保留 rcount 不采正文，写 comments 表 + 对账。
+正文只落本地库（data/bilibili.db）。测试参数：--limit 限制视频数、--no-comment 跳过评论。
 """
 
 from __future__ import annotations
