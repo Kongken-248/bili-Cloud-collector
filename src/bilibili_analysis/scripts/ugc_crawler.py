@@ -20,6 +20,25 @@ _DM_VIEW_URL = "https://api.bilibili.com/x/v2/dm/web/view"
 _DM_SEG_URL = "https://api.bilibili.com/x/v2/dm/web/seg.so"
 _REPLY_URL = "https://api.bilibili.com/x/v2/reply"
 
+# 断点续采状态：已完成（弹幕+评论）的 bvid 清单，崩溃重跑时跳过
+_UGC_STATE_FILE = RAW_DIR / "ugc_state.json"
+
+
+def _load_done() -> set[str]:
+    """读取已完成视频集合（断点续采）。"""
+    if _UGC_STATE_FILE.exists():
+        try:
+            return set(json.loads(_UGC_STATE_FILE.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return set()
+
+
+def _save_done(done: set[str]) -> None:
+    """写回已完成集合（每完成一个视频即保存，崩溃只损失当前一个）。"""
+    _UGC_STATE_FILE.write_text(
+        json.dumps(sorted(done), ensure_ascii=False), encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # protobuf 轻量解析（仅弹幕接口，字段按 B站 公开 proto 定义）
@@ -258,17 +277,20 @@ def _write_comments(bvid: str, replies: list[dict], reported: int, pages: int,
 
 
 def run(limit: int | None, no_comment: bool) -> int:
-    """对全部 head 视频执行弹幕 + 评论采集。"""
+    """对全部 head 视频执行弹幕 + 评论采集（断点续采：跳过已完成视频）。"""
     session = make_session(with_sessdata=True)
     videos = _load_videos()
     if limit is not None:
         videos = videos[:limit]
-    log(f"待采集视频：{len(videos)} 个")
+    done = _load_done()
+    log(f"待采集视频：{len(videos)} 个（已完成 {len(done)} 个，将跳过）")
     for v in videos:
         bvid, cid, aid = v.get("bvid"), v.get("cid"), v.get("aid")
         duration = v.get("duration") or 0
         if not cid or not aid or not duration:
             log(f"[跳过] {bvid}：缺 cid/aid/duration")
+            continue
+        if bvid in done:
             continue
         declared = (v.get("stat") or {}).get("danmaku", 0)  # 详情接口声明总弹幕数
         elems, seg_count = fetch_danmaku(session, cid, duration)
@@ -278,6 +300,8 @@ def run(limit: int | None, no_comment: bool) -> int:
             replies, reported, pages, complete = fetch_comments(session, aid, COMMENT_CAP_N)
             cgot = _write_comments(bvid, replies, reported, pages, complete, COMMENT_CAP_N)
             log(f"[评论] {bvid}：reported {reported} / got {cgot} / 完整 {complete}")
+        done.add(bvid)
+        _save_done(done)
     log("[完成] 弹幕/评论采集结束")
     return 0
 
