@@ -45,12 +45,11 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _collect_bvids() -> list[str]:
-    """收集快照对象 bvid，按优先级：
-    1. data/cloud/bvids.json（本地生成的云端种子清单）；
-    2. data/cloud/snapshot_*.json（云端已有快照）；
-    3. videos 表（本地，clean.py 已入库）；
-    4. raw 落盘（本地首轮，clean 之前）。
+def _collect_bvids(head_only: bool = False) -> list[str]:
+    """收集快照对象 bvid。
+
+    head_only=True（云端 workflow，资源受限）：只用种子清单 + 已有快照的 bvid；
+    head_only=False（本地默认）：videos 表全量（head + control），本地不受限。
     """
     bvids: set[str] = set()
     seed = CLOUD_DIR / "bvids.json"
@@ -66,7 +65,9 @@ def _collect_bvids() -> list[str]:
                 bvids.update(i.get("bvid") for i in d.get("items", []) if i.get("bvid"))
             except Exception:
                 continue
-    if not bvids:
+    if not head_only:
+        # 本地全量：videos 表 head + control 全部入库快照（数据字典的"仅 head"
+        # 限制针对云端推送数据；本地快照用于截面数据，Δ 分析层仍只取 head）
         conn = _connect()
         try:
             bvids.update(r["bvid"] for r in conn.execute("SELECT bvid FROM videos"))
@@ -135,11 +136,14 @@ def _save_cloud_round(collect_time: str, items: list[dict]) -> None:
     )
 
 
-def run(limit: int | None, date: str | None) -> int:
-    """执行快照采集。"""
+def run(limit: int | None, date: str | None, head_only: bool = False) -> int:
+    """执行快照采集。
+
+    head_only：True 仅快照 head（云端 workflow 用）；False 本地全量（head+control）。
+    """
     session = make_session()  # 公开接口，无需登录态
-    bvids = _collect_bvids()
-    _save_bvid_seed(bvids)  # 落盘完整 bvid 清单（云端快照种子，先于 limit 截断）
+    bvids = _collect_bvids(head_only)
+    _save_bvid_seed(sorted(bvids))  # 落盘 bvid 清单（先于 limit 截断）
     if limit is not None:
         bvids = bvids[:limit]
     collect_time = f"{date} 00:00:00" if date else now_str()
@@ -156,7 +160,7 @@ def run(limit: int | None, date: str | None) -> int:
         round_items.append(item)
         ok += 1
     _save_cloud_round(collect_time, round_items)
-    log(f"[完成] 快照 {ok}/{len(bvids)} 条 @ {collect_time}")
+    log(f"[完成] 快照 {ok}/{len(bvids)} 条 @ {collect_time}（{'head-only' if head_only else '全量'}）")
     return 0
 
 
@@ -165,8 +169,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="B站视频统计字段快照采集")
     parser.add_argument("--limit", type=int, default=None, help="限制快照视频数（测试用）")
     parser.add_argument("--date", type=str, default=None, help="指定快照日期（YYYY-MM-DD，测试幂等用）")
+    parser.add_argument("--head-only", action="store_true",
+                        help="仅快照 head（云端 workflow 用）；本地默认全量 head+control")
     args = parser.parse_args(argv)
-    return run(args.limit, args.date)
+    return run(args.limit, args.date, args.head_only)
 
 
 if __name__ == "__main__":

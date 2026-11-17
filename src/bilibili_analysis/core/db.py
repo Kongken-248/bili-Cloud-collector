@@ -241,7 +241,10 @@ def get_delta_table() -> pd.DataFrame:
     """
     metrics = ["view", "like", "coin", "fav", "share", "reply", "danmaku"]
     with get_connection() as conn:
-        df = pd.read_sql_query("SELECT * FROM snapshots ORDER BY bvid, collect_time", conn)
+        # Δ 宽表仅 head（03 口径：control 只做截面水平比较，不做任何增量分析）
+        df = pd.read_sql_query(
+            "SELECT s.* FROM snapshots s JOIN videos v ON v.bvid = s.bvid "
+            "WHERE v.sample_group = 'head' ORDER BY s.bvid, s.collect_time", conn)
     if df.empty:
         return df
     df["collect_time"] = pd.to_datetime(df["collect_time"])
