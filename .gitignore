@@ -1,0 +1,28 @@
+# ===== 敏感信息（绝不入库）=====
+.env
+SESSDATA
+*.secret
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+*.egg
+
+# ===== 云端快照仓库精简：以下本地开发内容不入库（本地磁盘保留）=====
+# bili-Cloud-collector 是云端快照专用仓库，只放 scripts/core + workflow；
+# 界面 / 文档 / 测试 / 本地数据仅保留在本地，不进仓库。
+src/bilibili_analysis/app/
+docs/
+tests/
+data/
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
