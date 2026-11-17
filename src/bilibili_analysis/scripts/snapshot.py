@@ -100,7 +100,7 @@ def _save_bvid_seed(bvids: list[str]) -> None:
 
 def fetch_stat(session, bvid: str) -> dict | None:
     """调详情接口拿当前统计字段（view/like/coin/fav/share/reply/danmaku）。"""
-    data = http_get(session, _VIDEO_URL, {"bvid": bvid})
+    data = http_get(session, _VIDEO_URL, {"bvid": bvid}, timeout=8)
     if data and data.get("code") == 0:
         return (data.get("data") or {}).get("stat") or {}
     return None
