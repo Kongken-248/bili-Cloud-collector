@@ -40,10 +40,10 @@ _UPPER_VIDEOS_URL = "https://api.bilibili.com/x/space/wbi/arc/search"
 _CONTROL_MAX_PER_UPPER = 30
 _CONTROL_RECENT_DAYS = 365
 
-# 冻结自检阈值（工程默认，可后调）
-_FREEZE_RECENT_DAYS = 30
-_FREEZE_RECENT_RATIO = 0.3  # 近期投稿占比低于此值视为疑似冻结
-_FREEZE_DIFF_RATIO = 0.9    # 与上轮榜单重合率高于此值视为无变化
+# 冻结自检阈值（对齐提示词 4.3：近 7 天投稿占比 <20%，或相邻两轮重合率 >90%）
+_FREEZE_RECENT_DAYS = 7
+_FREEZE_RECENT_RATIO = 0.2   # 近 7 天投稿占比低于此值视为疑似冻结
+_FREEZE_DIFF_RATIO = 0.9     # 与上轮榜单重合率高于此值视为无变化
 
 _STATE_FILE = RAW_DIR / "crawl_state.json"
 

@@ -86,15 +86,25 @@ REQUEST_INTERVAL_MIN: float = _get_float("REQUEST_INTERVAL_MIN", 1.5)
 REQUEST_INTERVAL_MAX: float = _get_float("REQUEST_INTERVAL_MAX", 3.0)
 RETRY_TIMES: int = _get_int("RETRY_TIMES", 3)
 
-# 评论封顶条数 N：每视频仅采一级热评（主楼）
-COMMENT_CAP_N: int = _get_int("COMMENT_CAP_N", 200)
+# 批次间冷却（秒）：分区之间 / UP主批次之间的额外冷却（提示词 4.3）
+BATCH_COOLDOWN_MIN: float = _get_float("BATCH_COOLDOWN_MIN", 30)
+BATCH_COOLDOWN_MAX: float = _get_float("BATCH_COOLDOWN_MAX", 60)
 
-# 弹幕对账 ratio 阈值：低于该值的视频在时间分布类分析中剔除或标注
-DANMAKU_RATIO_THRESHOLD: float = _get_float("DANMAKU_RATIO_THRESHOLD", 0.8)
+# 评论封顶条数 N：每视频仅采一级热评（主楼），提示词默认 100
+COMMENT_CAP_N: int = _get_int("COMMENT_CAP_N", 100)
 
-# UP主回查降级触发阈值
-UP_DEGRADE_TIME_LIMIT: float = _get_float("UP_DEGRADE_TIME_LIMIT", 3600)
-UP_DEGRADE_RISK_LIMIT: int = _get_int("UP_DEGRADE_RISK_LIMIT", 5)
+# 弹幕对账 ratio 阈值：低于该值的视频在时间分布类分析中剔除或标注（提示词默认 0.9）
+DANMAKU_RATIO_THRESHOLD: float = _get_float("DANMAKU_RATIO_THRESHOLD", 0.9)
+
+# UP主回查降级触发阈值（提示词 4.3：任一命中即触发，并写日志）
+UP_DEGRADE_TIME_LIMIT: float = _get_float("UP_DEGRADE_TIME_LIMIT", 14400)   # 预计剩余 >4 小时
+UP_DEGRADE_RISK_LIMIT: int = _get_int("UP_DEGRADE_RISK_LIMIT", 10)          # 连续失败 ≥10 个
+UP_DEGRADE_FAIL_RATE: float = _get_float("UP_DEGRADE_FAIL_RATE", 0.2)       # 失败率 >20%
+
+# 冻结自检（提示词 4.3：近 7 天投稿占比 <20%，或相邻两轮重合率 >90%）
+FREEZE_RECENT_DAYS: int = _get_int("FREEZE_RECENT_DAYS", 7)
+FREEZE_RECENT_RATIO: float = _get_float("FREEZE_RECENT_RATIO", 0.2)
+FREEZE_OVERLAP_RATIO: float = _get_float("FREEZE_OVERLAP_RATIO", 0.9)
 
 # 分析层工程默认（数据字典：进度分箱 20 bins、趋同度窗口 10 秒，均为配置项）
 DANMAKU_PROGRESS_BINS: int = _get_int("DANMAKU_PROGRESS_BINS", 20)
