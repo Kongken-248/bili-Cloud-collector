@@ -17,15 +17,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 
-from bilibili_analysis.core.config import CLOUD_DIR, RAW_DIR
-from bilibili_analysis.core.db import get_connection
+from bilibili_analysis.core.config import CLOUD_DIR, DB_PATH, RAW_DIR
 from bilibili_analysis.scripts._common import http_get, log, make_session, now_str
 
 _VIDEO_URL = "https://api.bilibili.com/x/web-interface/view"
 
 # 快照字段（对齐数据字典 snapshots 表，`like` 为 SQLite 关键字需加引号）
 _SNAP_COLS = ["view", "like", "coin", "fav", "share", "reply", "danmaku"]
+
+
+def _connect() -> sqlite3.Connection:
+    """SQLite 直连（不依赖 db.py，避免云端引入 pandas 依赖）。"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _collect_bvids() -> list[str]:
@@ -50,7 +57,7 @@ def _collect_bvids() -> list[str]:
             except Exception:
                 continue
     if not bvids:
-        conn = get_connection()
+        conn = _connect()
         try:
             bvids.update(r["bvid"] for r in conn.execute("SELECT bvid FROM videos"))
         finally:
@@ -89,7 +96,7 @@ def fetch_stat(session, bvid: str) -> dict | None:
 
 def _write_snapshot(bvid: str, collect_time: str, stat: dict) -> None:
     """写一条快照（复合主键 bvid+collect_time，重复执行覆盖，幂等）。"""
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute(
             "INSERT OR REPLACE INTO snapshots "
