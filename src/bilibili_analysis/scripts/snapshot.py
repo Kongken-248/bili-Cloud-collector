@@ -29,9 +29,19 @@ _SNAP_COLS = ["view", "like", "coin", "fav", "share", "reply", "danmaku"]
 
 
 def _connect() -> sqlite3.Connection:
-    """SQLite 直连（不依赖 db.py，避免云端引入 pandas 依赖）。"""
+    """SQLite 直连（不依赖 db.py，避免云端引入 pandas 依赖）。
+
+    云端数据库可能是新建的空库，连接时确保 snapshots 表存在（幂等）。
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS snapshots ("
+        "bvid TEXT, collect_time DATETIME, view INTEGER, \"like\" INTEGER, coin INTEGER, "
+        "fav INTEGER, share INTEGER, reply INTEGER, danmaku INTEGER, "
+        "PRIMARY KEY (bvid, collect_time))"
+    )
+    conn.commit()
     return conn
 
 
@@ -60,6 +70,8 @@ def _collect_bvids() -> list[str]:
         conn = _connect()
         try:
             bvids.update(r["bvid"] for r in conn.execute("SELECT bvid FROM videos"))
+        except sqlite3.OperationalError:
+            pass  # videos 表不存在（云端空库），跳过
         finally:
             conn.close()
     if not bvids:
