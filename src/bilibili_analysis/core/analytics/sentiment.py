@@ -16,35 +16,41 @@ from pathlib import Path
 import pandas as pd
 
 from bilibili_analysis.core.config import PROJECT_ROOT
-from bilibili_analysis.core.db import get_comments, get_connection
+from bilibili_analysis.core.db import get_comments, get_connection, get_danmaku
 
 DATA_DIR = PROJECT_ROOT / "data"
-ANNOTATION_FILE = DATA_DIR / "sentiment_annotation.csv"
-SELECTION_FILE = DATA_DIR / "sentiment_selection.csv"
+# 标注文件按来源分开：comments 回填表字段，danmaku 另存结果（数据字典口径）
+_ANNOTATION_FILES = {
+    "comments": DATA_DIR / "sentiment_annotation_comments.csv",
+    "danmaku": DATA_DIR / "sentiment_annotation_danmaku.csv",
+}
 
 
-def export_annotation_sample(n: int = 200, seed: int = 42) -> Path:
+def export_annotation_sample(source: str = "comments", n: int = 200, seed: int = 42) -> Path:
     """按 bvid 分层抽样导出标注样本（每视频按占比分配），供人工标注。
 
-    n：目标样本量（提示词 200–300 条）；返回标注文件路径。
+    source：comments（一级热评）或 danmaku（弹幕正文）；n 目标样本量（200–300）。
     """
-    com = get_comments()
-    if com.empty:
-        raise ValueError("comments 表为空，请先运行评论采集")
-    per = (n * com.groupby("bvid").size() / len(com)).round().astype(int).clip(lower=1)
+    df = get_comments() if source == "comments" else get_danmaku()
+    if df.empty:
+        raise ValueError(f"{source} 表为空，请先运行采集")
+    per = (n * df.groupby("bvid").size() / len(df)).round().astype(int).clip(lower=1)
     parts = [g.sample(min(len(g), per[bvid]), random_state=seed)
-             for bvid, g in com.groupby("bvid")]
+             for bvid, g in df.groupby("bvid")]
     sample = pd.concat(parts)
-    out = sample[["rpid", "bvid", "content"]].copy()
+    text_col = "content"
+    out = sample[["rpid" if source == "comments" else "dmid", "bvid", text_col]].copy()
+    out.columns = ["id", "bvid", "content"]
     out["label"] = ""  # 人工标注列：正 / 中 / 负
-    ANNOTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(ANNOTATION_FILE, index=False, encoding="utf-8-sig")
-    return ANNOTATION_FILE
+    path = _ANNOTATION_FILES[source]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
 
 
-def import_annotation(path: Path = ANNOTATION_FILE) -> pd.DataFrame:
+def import_annotation(source: str = "comments") -> pd.DataFrame:
     """读回人工标注结果（label 列取值为 正/中/负）。"""
-    return pd.read_csv(path, encoding="utf-8-sig")
+    return pd.read_csv(_ANNOTATION_FILES[source], encoding="utf-8-sig")
 
 
 def _score_with_tool(texts: list[str], tool: str) -> list[str] | None:
@@ -62,9 +68,9 @@ def _score_with_tool(texts: list[str], tool: str) -> list[str] | None:
     return None  # cemotion / 预训练模型按选型实验扩展
 
 
-def compare_tools(path: Path = ANNOTATION_FILE, min_labeled: int = 30) -> pd.DataFrame:
+def compare_tools(source: str = "comments", min_labeled: int = 30) -> pd.DataFrame:
     """各工具在人工标注集上的准确率与宏 F1；工具未安装则跳过并留痕。"""
-    labeled = import_annotation(path)
+    labeled = import_annotation(source)
     labeled = labeled[labeled["label"].isin(["正", "中", "负"])]
     if len(labeled) < min_labeled:
         raise ValueError(f"有效标注仅 {len(labeled)} 条（需 ≥{min_labeled}），请先完成人工标注")
