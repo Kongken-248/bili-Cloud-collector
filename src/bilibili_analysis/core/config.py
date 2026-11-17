@@ -96,6 +96,10 @@ DANMAKU_RATIO_THRESHOLD: float = _get_float("DANMAKU_RATIO_THRESHOLD", 0.8)
 UP_DEGRADE_TIME_LIMIT: float = _get_float("UP_DEGRADE_TIME_LIMIT", 3600)
 UP_DEGRADE_RISK_LIMIT: int = _get_int("UP_DEGRADE_RISK_LIMIT", 5)
 
+# 分析层工程默认（数据字典：进度分箱 20 bins、趋同度窗口 10 秒，均为配置项）
+DANMAKU_PROGRESS_BINS: int = _get_int("DANMAKU_PROGRESS_BINS", 20)
+DANMAKU_SIMILARITY_WINDOW: int = _get_int("DANMAKU_SIMILARITY_WINDOW", 10)
+
 # ---------------------------------------------------------------------------
 # 登录态（仅本地，不入库不入仓）
 # ---------------------------------------------------------------------------
