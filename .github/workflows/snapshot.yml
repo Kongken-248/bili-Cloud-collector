@@ -1,0 +1,46 @@
+# 云端快照采集工作流
+#
+# 触发方式：
+#   1. workflow_dispatch：GitHub 页面手动触发（验收用）；
+#   2. repository_dispatch(type=snapshot)：cron-job.org 定时触发（每天 2 轮）。
+#
+# 说明：快照只调公开详情接口，不需要 SESSDATA，故云端不接触任何登录态。
+# 提交身份统一匿名 x <x@x>，避免泄露真实邮箱。
+
+name: 快照采集
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [snapshot]
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖（仅快照所需的最小集）
+        run: |
+          pip install -e . --no-deps
+          pip install requests python-dotenv
+
+      - name: 运行快照采集
+        run: python -m bilibili_analysis.scripts.snapshot
+
+      - name: 提交并推送
+        run: |
+          git config user.name "x"
+          git config user.email "x@x"
+          git add data/cloud/
+          git commit -m "快照 $(TZ=Asia/Shanghai date +%F_%T)" || echo "无变化"
+          git push

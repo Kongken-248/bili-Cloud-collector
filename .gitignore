@@ -19,7 +19,8 @@ venv/
 src/bilibili_analysis/app/
 docs/
 tests/
-data/
+data/*
+!data/cloud/
 
 # ===== IDE / 系统 =====
 .idea/
