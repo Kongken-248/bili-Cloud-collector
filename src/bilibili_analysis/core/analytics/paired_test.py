@@ -80,6 +80,8 @@ def paired_wilcoxon_one(feature: str, min_pairs_per_up: int = 5) -> dict:
         "rank_biserial": _rank_biserial(pair_df["head"].values - pair_df["control"].values),
         "median_head": float(pair_df["head"].median()),
         "median_control": float(pair_df["control"].median()),
+        # 原始配对（head 值 / control 中位数 / mid），供页面差值分布图复用
+        "pairs": pair_df[["head", "control", "mid"]],
     })
     return out
 
@@ -126,7 +128,9 @@ def fixed_effect_regression(df: pd.DataFrame | None = None) -> dict:
     X = pd.concat([data[core_cols].reset_index(drop=True), dummies.reset_index(drop=True)], axis=1)
     y = data["log_view"].reset_index(drop=True)
 
-    model = sm.OLS(y, sm.add_constant(X)).fit()
+    # 标准误按 owner_mid 聚类（cluster robust，提示词硬约束）
+    model = sm.OLS(y, sm.add_constant(X)).fit(
+        cov_type="cluster", cov_kwds={"groups": data["owner_mid"].values})
     # 组内 R²：对 y 与核心变量做 UP主 组内去均值后回归（固定效应 within 变换）
     grp = data.assign(_y=y.values)
     y_w = grp["_y"] - grp.groupby("owner_mid")["_y"].transform("mean")

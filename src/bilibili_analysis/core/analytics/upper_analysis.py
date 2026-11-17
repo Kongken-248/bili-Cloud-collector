@@ -19,7 +19,7 @@ RANDOM_SEED = 42  # 固定随机种子（结果可复现）
 
 
 def upper_stats() -> pd.DataFrame:
-    """UP主 级统计表：fans、投稿数、head 播放中位数、破圈度。"""
+    """UP主 级统计表：fans、投稿数、head 播放中位数、破圈度、代表视频。"""
     vids = get_videos()
     uppers = get_uppers()
     head = vids[vids["sample_group"] == "head"]
@@ -28,6 +28,11 @@ def upper_stats() -> pd.DataFrame:
     ctrl_count = vids[vids["sample_group"] == "control"].groupby("owner_mid").size()\
         .rename("control_count")
     df = uppers.set_index("mid").join(stats).join(ctrl_count).reset_index()
+    # 代表视频：head 中播放量最高的视频标题（四象限悬停展示用）
+    top_v = (head.dropna(subset=["latest_view"])
+             .sort_values("latest_view").groupby("owner_mid").tail(1)
+             .set_index("owner_mid")["title"].rename("top_video"))
+    df = df.join(top_v, on="mid")
     # 破圈度：view / fans；fans 缺失或 ≤0 剔除并计数（不填 0 防除零）
     df["excluded_no_fans"] = df["fans"].isna() | (df["fans"] <= 0)
     df["breakout"] = np.where(df["excluded_no_fans"], np.nan,
@@ -61,7 +66,8 @@ def breakout_quadrant() -> dict:
         UP主数=("mid", "size"), 破圈度中位数=("breakout", "median"),
         粉丝中位数=("fans", "median")).reset_index()
     reps = valid.sort_values("breakout", ascending=False).groupby("quadrant").head(3)
-    return {"table": valid[["mid", "name", "fans", "median_view", "breakout", "quadrant"]],
+    return {"table": valid[["mid", "name", "fans", "median_view", "breakout",
+                            "quadrant", "top_video"]],
             "x_split": x_split, "y_split": y_split, "excluded_no_fans": excluded,
             "summary": summary, "representatives": reps}
 

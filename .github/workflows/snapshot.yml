@@ -45,6 +45,8 @@ jobs:
         run: |
           git config user.name "x"
           git config user.email "x@x"
+          # 先同步远程（本地开发可能推了新代码，避免 fetch first 冲突）
+          git pull --rebase origin main || echo "pull 失败，继续尝试 push"
           git add data/cloud/
           git commit -m "快照 $(TZ=Asia/Shanghai date +%F_%T)" || echo "无变化"
           git push

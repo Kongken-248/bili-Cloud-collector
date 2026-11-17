@@ -51,9 +51,16 @@ def tokenize(texts, top_n: int = 50) -> list[tuple[str, int]]:
     return counter.most_common(top_n)
 
 
-def top_words(source: str = "danmaku", bvid: str | None = None, top_n: int = 50):
-    """高频词/词云数据：source 为 danmaku（弹幕）或 comments（一级热评）。"""
+def top_words(source: str = "danmaku", bvid: str | None = None,
+              tname: str | None = None, top_n: int = 50):
+    """高频词/词云数据：source 为 danmaku（弹幕）或 comments（一级热评）。
+
+    tname：可选分区过滤（全局筛选联动用），经 videos 表 join 实现。
+    """
     df = get_danmaku(bvid) if source == "danmaku" else get_comments(bvid)
+    if tname:
+        ok_bvids = set(get_videos(tname=tname)["bvid"])
+        df = df[df["bvid"].isin(ok_bvids)]
     return tokenize(df["content"].dropna().tolist(), top_n)
 
 
@@ -72,6 +79,9 @@ def media_compare(bvid: str) -> dict:
     return {
         "danmaku_len": dan_len.describe().round(1).to_dict(),
         "comment_len": com_len.describe().round(1).to_dict(),
+        # 原始长度序列，供媒介对比组图（直方图）复用
+        "danmaku_lengths": dan_len.tolist(),
+        "comment_lengths": com_len.tolist(),
         "danmaku_top": list(dan_top.items())[:20],
         "comment_top": list(com_top.items())[:20],
         "top_overlap": overlap[:20],
@@ -79,10 +89,13 @@ def media_compare(bvid: str) -> dict:
     }
 
 
-def progress_histogram(bins: int = DANMAKU_PROGRESS_BINS) -> dict:
+def progress_histogram(bins: int = DANMAKU_PROGRESS_BINS,
+                       by_partition: bool = False) -> dict:
     """进度分布直方图：progress/duration 分箱，视频内占比归一化后跨视频求均值。
 
     仅用 ratio 达标视频（阈值配置项），剔除清单留痕；不做峰值检测。
+    by_partition=True 时附带分区注意力曲线（数据字典：按分区对比），
+    每条曲线仍为「视频内占比 → 跨视频均值」，不做绝对条数比较。
     """
     ratio_df = get_danmaku_ratio()
     if ratio_df.empty:
@@ -92,7 +105,7 @@ def progress_histogram(bins: int = DANMAKU_PROGRESS_BINS) -> dict:
     excluded = ok[ok < DANMAKU_RATIO_THRESHOLD].index.tolist()
     dan = get_danmaku()
     dan = dan[dan["bvid"].isin(ok_bvids) & dan["progress"].notna()]
-    vids = get_videos()[["bvid", "duration"]]
+    vids = get_videos()[["bvid", "duration", "tname"]]
     merged = dan.merge(vids, on="bvid", how="left")
     merged = merged[merged["duration"] > 0].copy()
     merged["pos"] = (merged["progress"] / merged["duration"]).clip(0, 1)
@@ -100,8 +113,14 @@ def progress_histogram(bins: int = DANMAKU_PROGRESS_BINS) -> dict:
     per_video = merged.groupby(["bvid", "bin"]).size().reset_index(name="n")
     per_video["share"] = per_video["n"] / per_video.groupby("bvid")["n"].transform("sum")
     mean_curve = per_video.groupby("bin")["share"].mean().round(4)
-    return {"mean_curve": mean_curve, "bins": bins,
-            "n_videos_used": len(ok_bvids), "excluded_bvids": excluded}
+    result = {"mean_curve": mean_curve, "bins": bins,
+              "n_videos_used": len(ok_bvids), "excluded_bvids": excluded}
+    if by_partition:
+        result["partition_curves"] = {
+            tname: g.groupby("bin")["share"].mean().round(4)
+            for tname, g in per_video.merge(
+                vids[["bvid", "tname"]], on="bvid", how="left").groupby("tname")}
+    return result
 
 
 def danmaku_convergence(bvid: str | None = None,
