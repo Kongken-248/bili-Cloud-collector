@@ -181,10 +181,12 @@ def _write_uppers(uppers: list[dict]) -> int:
             fans = u.get("fans")
             if fans is None or fans <= 0:
                 fans = None  # 缺失标记，不填 0
+            # name 缺失（注销/封禁账号接口返回空）用 mid 占位，避免分析层出现 nan
+            name = u.get("name") or f"UP_{u.get('mid')}"
             conn.execute(
                 "INSERT OR REPLACE INTO uppers (mid, name, fans, archive_count, collect_time) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (u.get("mid"), u.get("name"), fans, u.get("archive_count"), now_str()),
+                (u.get("mid"), name, fans, u.get("archive_count"), now_str()),
             )
             n += 1
         conn.commit()
