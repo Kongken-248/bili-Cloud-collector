@@ -29,12 +29,19 @@ _SNAP_COLS = ["view", "like", "coin", "fav", "share", "reply", "danmaku"]
 
 
 def _collect_bvids() -> list[str]:
-    """收集快照对象 bvid。
-
-    云端（仓库里无 data/raw）从已有快照 JSON 收集 bvid；
-    本地首轮（data/cloud 为空）回退到 raw 落盘（head 详情 + control 投稿）。
+    """收集快照对象 bvid，按优先级：
+    1. data/cloud/bvids.json（本地生成的云端种子清单）；
+    2. data/cloud/snapshot_*.json（云端已有快照）；
+    3. videos 表（本地，clean.py 已入库）；
+    4. raw 落盘（本地首轮，clean 之前）。
     """
     bvids: set[str] = set()
+    seed = CLOUD_DIR / "bvids.json"
+    if seed.exists():
+        try:
+            bvids.update(json.loads(seed.read_text(encoding="utf-8")).get("bvids", []))
+        except Exception:
+            pass
     if CLOUD_DIR.exists():
         for f in CLOUD_DIR.glob("snapshot_*.json"):
             try:
@@ -42,6 +49,12 @@ def _collect_bvids() -> list[str]:
                 bvids.update(i.get("bvid") for i in d.get("items", []) if i.get("bvid"))
             except Exception:
                 continue
+    if not bvids:
+        conn = get_connection()
+        try:
+            bvids.update(r["bvid"] for r in conn.execute("SELECT bvid FROM videos"))
+        finally:
+            conn.close()
     if not bvids:
         video_dir = RAW_DIR / "video"
         if video_dir.exists():
@@ -56,6 +69,14 @@ def _collect_bvids() -> list[str]:
                 except Exception:
                     continue
     return sorted(bvids)
+
+
+def _save_bvid_seed(bvids: list[str]) -> None:
+    """落盘 bvid 清单到 data/cloud/bvids.json（云端快照的种子来源）。"""
+    CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    (CLOUD_DIR / "bvids.json").write_text(
+        json.dumps({"bvids": bvids}, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
 
 
 def fetch_stat(session, bvid: str) -> dict | None:
@@ -99,6 +120,7 @@ def run(limit: int | None, date: str | None) -> int:
     """执行快照采集。"""
     session = make_session()  # 公开接口，无需登录态
     bvids = _collect_bvids()
+    _save_bvid_seed(bvids)  # 落盘完整 bvid 清单（云端快照种子，先于 limit 截断）
     if limit is not None:
         bvids = bvids[:limit]
     collect_time = f"{date} 00:00:00" if date else now_str()
