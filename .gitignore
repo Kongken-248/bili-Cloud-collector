@@ -14,13 +14,28 @@ venv/
 *.egg
 
 # ===== 云端快照仓库精简：以下本地开发内容不入库（本地磁盘保留）=====
-# bili-Cloud-collector 是云端快照专用仓库，只放 scripts/core + workflow；
-# 界面 / 文档 / 测试 / 本地数据仅保留在本地，不进仓库。
+# bili-Cloud-collector 是云端快照专用仓库，只放快照运行所需：
+#   scripts/snapshot.py + scripts/_common.py + core/config.py（+ 各 __init__）
+# 其余全部代码（界面/文档/分析/采集/清洗/合并）由 Private 备份仓库
+# bilibili-analysis 管理（独立备份 git：.git-backup，见 scripts/backup.py）。
 src/bilibili_analysis/app/
 docs/
 tests/
 data/*
 !data/cloud/
+src/bilibili_analysis/core/db.py
+src/bilibili_analysis/core/analytics/
+src/bilibili_analysis/core/charts/
+src/bilibili_analysis/core/llm.py
+src/bilibili_analysis/core/prompts.py
+src/bilibili_analysis/scripts/crawler.py
+src/bilibili_analysis/scripts/ugc_crawler.py
+src/bilibili_analysis/scripts/clean.py
+src/bilibili_analysis/scripts/sync.py
+src/bilibili_analysis/scripts/backup.py
+.git-backup/
+.git-backup-ignore
+scripts_backup.local/
 
 # ===== IDE / 系统 =====
 .idea/
