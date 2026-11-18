@@ -45,11 +45,11 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _collect_bvids(head_only: bool = False) -> list[str]:
-    """收集快照对象 bvid。
+def _collect_bvids() -> list[str]:
+    """收集快照对象 bvid（**仅 head**，本地与云端口径统一）。
 
-    head_only=True（云端 workflow，资源受限）：只用种子清单 + 已有快照的 bvid；
-    head_only=False（本地默认）：videos 表全量（head + control），本地不受限。
+    来源优先级：data/cloud/bvids.json 种子 → 已有快照 → videos 表 head → raw 兜底。
+    control 不做快照（数据字典）：其截面数据由 videos.view_t0（首次观测时点基准播放量）承担。
     """
     bvids: set[str] = set()
     seed = CLOUD_DIR / "bvids.json"
@@ -65,29 +65,21 @@ def _collect_bvids(head_only: bool = False) -> list[str]:
                 bvids.update(i.get("bvid") for i in d.get("items", []) if i.get("bvid"))
             except Exception:
                 continue
-    if not head_only:
-        # 本地全量：videos 表 head + control 全部入库快照（数据字典的"仅 head"
-        # 限制针对云端推送数据；本地快照用于截面数据，Δ 分析层仍只取 head）
-        conn = _connect()
-        try:
-            bvids.update(r["bvid"] for r in conn.execute("SELECT bvid FROM videos"))
-        except sqlite3.OperationalError:
-            pass  # videos 表不存在（云端空库），跳过
-        finally:
-            conn.close()
+    conn = _connect()
+    try:
+        # 统一过滤：仅保留 head（数据字典 snapshots 仅 head；种子/历史快照 JSON
+        # 可能含早期口径遗留的 control，一律与 videos.head 取交集剔除）
+        head_set = {r["bvid"] for r in conn.execute(
+            "SELECT bvid FROM videos WHERE sample_group='head'")}
+        bvids &= head_set
+    except sqlite3.OperationalError:
+        pass  # 云端空库：信任种子（种子本身即 head 清单）
+    finally:
+        conn.close()
     if not bvids:
         video_dir = RAW_DIR / "video"
         if video_dir.exists():
             bvids.update(f.stem for f in video_dir.glob("*.json"))
-        uv_dir = RAW_DIR / "upper_videos"
-        if uv_dir.exists():
-            for f in uv_dir.glob("*.json"):
-                try:
-                    d = json.loads(f.read_text(encoding="utf-8"))
-                    vlist = (d.get("list") or {}).get("vlist") or []
-                    bvids.update(v.get("bvid") for v in vlist if v.get("bvid"))
-                except Exception:
-                    continue
     return sorted(bvids)
 
 
@@ -136,14 +128,11 @@ def _save_cloud_round(collect_time: str, items: list[dict]) -> None:
     )
 
 
-def run(limit: int | None, date: str | None, head_only: bool = False) -> int:
-    """执行快照采集。
-
-    head_only：True 仅快照 head（云端 workflow 用）；False 本地全量（head+control）。
-    """
+def run(limit: int | None, date: str | None) -> int:
+    """执行快照采集（仅 head，本地与云端口径统一）。"""
     session = make_session()  # 公开接口，无需登录态
-    bvids = _collect_bvids(head_only)
-    _save_bvid_seed(sorted(bvids))  # 落盘 bvid 清单（先于 limit 截断）
+    bvids = _collect_bvids()
+    _save_bvid_seed(bvids)  # 落盘 bvid 清单（先于 limit 截断）
     if limit is not None:
         bvids = bvids[:limit]
     collect_time = f"{date} 00:00:00" if date else now_str()
@@ -160,19 +149,17 @@ def run(limit: int | None, date: str | None, head_only: bool = False) -> int:
         round_items.append(item)
         ok += 1
     _save_cloud_round(collect_time, round_items)
-    log(f"[完成] 快照 {ok}/{len(bvids)} 条 @ {collect_time}（{'head-only' if head_only else '全量'}）")
+    log(f"[完成] 快照 {ok}/{len(bvids)} 条 @ {collect_time}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     """命令行入口。"""
-    parser = argparse.ArgumentParser(description="B站视频统计字段快照采集")
+    parser = argparse.ArgumentParser(description="B站 head 视频统计字段快照采集")
     parser.add_argument("--limit", type=int, default=None, help="限制快照视频数（测试用）")
     parser.add_argument("--date", type=str, default=None, help="指定快照日期（YYYY-MM-DD，测试幂等用）")
-    parser.add_argument("--head-only", action="store_true",
-                        help="仅快照 head（云端 workflow 用）；本地默认全量 head+control")
     args = parser.parse_args(argv)
-    return run(args.limit, args.date, args.head_only)
+    return run(args.limit, args.date)
 
 
 if __name__ == "__main__":
