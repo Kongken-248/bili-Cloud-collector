@@ -26,17 +26,18 @@ _ANNOTATION_FILES = {
 }
 
 
-def export_annotation_sample(source: str = "comments", n: int = 200, seed: int = 42) -> Path:
-    """按 bvid 分层抽样导出标注样本（每视频按占比分配），供人工标注。
+def export_annotation_sample(source: str = "comments", n: int = 300, seed: int = 42) -> Path:
+    """按 bvid 分层比例抽样导出标注样本，供人工标注。
 
-    source：comments（一级热评）或 danmaku（弹幕正文）；n 目标样本量（200–300）。
+    source：comments（一级热评）或 danmaku（弹幕正文）；n 目标样本量（提示词 200–300）。
+    纯比例抽样（小视频按占比可能 0 条），总量 ≈ n，避免每视频强制 1 条导致样本膨胀。
     """
     df = get_comments() if source == "comments" else get_danmaku()
     if df.empty:
         raise ValueError(f"{source} 表为空，请先运行采集")
-    per = (n * df.groupby("bvid").size() / len(df)).round().astype(int).clip(lower=1)
+    per = (n * df.groupby("bvid").size() / len(df)).round().astype(int)
     parts = [g.sample(min(len(g), per[bvid]), random_state=seed)
-             for bvid, g in df.groupby("bvid")]
+             for bvid, g in df.groupby("bvid") if per[bvid] > 0]
     sample = pd.concat(parts)
     text_col = "content"
     out = sample[["rpid" if source == "comments" else "dmid", "bvid", text_col]].copy()
@@ -54,7 +55,10 @@ def import_annotation(source: str = "comments") -> pd.DataFrame:
 
 
 def _score_with_tool(texts: list[str], tool: str) -> list[str] | None:
-    """用指定工具打三分类（正/中/负）；工具未安装返回 None。"""
+    """用指定工具打三分类（正/中/负）；工具未安装/不可用返回 None。
+
+    llm 分支：分批（每批 30 条）调真实大模型独立判断，作为选型对比工具之一。
+    """
     if tool == "snownlp":
         try:
             from snownlp import SnowNLP
@@ -65,7 +69,33 @@ def _score_with_tool(texts: list[str], tool: str) -> list[str] | None:
             s = SnowNLP(str(t)).sentiments
             out.append("正" if s > 0.6 else ("负" if s < 0.4 else "中"))
         return out
-    return None  # cemotion / 预训练模型按选型实验扩展
+    if tool == "llm":
+        import re
+
+        from bilibili_analysis.core.llm import chat
+
+        out: list[str] = []
+        batch_size = 30
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            lines = "\n".join(f"{j + 1}. {str(t)[:80]}" for j, t in enumerate(batch))
+            prompt = (
+                "你是情感标注员。对下列每条 B站评论/弹幕独立判断情感倾向（正/中/负）。"
+                "判断标准：正面=赞美/支持/积极情绪；负面=批评/嘲讽/消极情绪；"
+                "中性=陈述/疑问/无关情绪。\n"
+                "严格按「序号: 判定」逐行输出，不要任何多余文字：\n" + lines
+            )
+            r = chat(prompt, temperature=0.0, scene="情感选型-llm对比")
+            if not r.ok:
+                return None
+            mapping = {}
+            for line in r.content.splitlines():
+                m = re.match(r"\s*(\d+)\s*[:：.]\s*(正|中|负)", line)
+                if m:
+                    mapping[int(m.group(1))] = m.group(2)
+            out.extend(mapping.get(j + 1, "中") for j in range(len(batch)))
+        return out
+    return None  # cemotion / PaddleNLP 等本地模型按选型实验扩展
 
 
 def compare_tools(source: str = "comments", min_labeled: int = 30) -> pd.DataFrame:
@@ -77,7 +107,7 @@ def compare_tools(source: str = "comments", min_labeled: int = 30) -> pd.DataFra
     from sklearn.metrics import accuracy_score, f1_score
 
     rows = []
-    for tool in ("snownlp", "cemotion"):
+    for tool in ("snownlp", "cemotion", "llm"):
         preds = _score_with_tool(labeled["content"].tolist(), tool)
         if preds is None:
             rows.append({"tool": tool, "accuracy": None, "macro_f1": None,
