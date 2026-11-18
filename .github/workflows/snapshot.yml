@@ -13,10 +13,8 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [snapshot]
-  schedule:
-    # GitHub 原生定时保底：UTC 02:00/14:00 = 北京 10:00/22:00，每天 2 轮
-    # （cron-job.org 触发 repository_dispatch 可选叠加；GitHub schedule 高峰有 0~60 分钟延迟）
-    - cron: "0 2,14 * * *"
+# 定时触发仅用 cron-job.org（repository_dispatch，见仓库 README 配置说明）；
+# GitHub 原生 schedule 实测不可靠，已撤销。
 
 permissions:
   contents: write
