@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS videos (
     sample_group     TEXT,
     rank_no          INTEGER,
     is_recent_12m    INTEGER,
-    first_seen_batch TEXT
+    first_seen_batch TEXT,
+    view_t0          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS uppers (
@@ -144,7 +145,15 @@ def init_db(db_path: Path | None = None) -> None:
         conn.executescript(_SCHEMA_SQL)
         for sql in _INDEX_SQL:
             conn.execute(sql)
+        _migrate(conn)
         conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """轻量列迁移：旧库缺 view_t0 列时补加（数据字典新增字段）。"""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(videos)")]
+    if "view_t0" not in cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN view_t0 INTEGER")
 
 
 def list_tables(db_path: Path | None = None) -> list[str]:

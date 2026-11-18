@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 
 from bilibili_analysis.core.config import PARTITIONS, RAW_DIR
-from bilibili_analysis.core.db import get_connection
+from bilibili_analysis.core.db import get_connection, init_db
 from bilibili_analysis.scripts._common import log, now_str
 
 
@@ -73,7 +73,7 @@ def _tname_of(tid) -> str | None:
 # 读原始 JSON
 # ---------------------------------------------------------------------------
 def _load_head_videos() -> list[dict]:
-    """读榜单 ranking/*.json，返回 head 视频列表（含 rank_no、分区）。"""
+    """读榜单 ranking/*.json，返回 head 视频列表（含 rank_no、分区、T0 播放量）。"""
     head: list[dict] = []
     for f in sorted((RAW_DIR / "ranking").glob("*.json")):
         tid = int(f.stem)
@@ -90,12 +90,13 @@ def _load_head_videos() -> list[dict]:
                 "tid": tid, "tname": _tname_of(tid),
                 "owner_mid": owner.get("mid"), "owner_name": owner.get("name"),
                 "rank_no": idx + 1,
+                "view_t0": (it.get("stat") or {}).get("view"),  # 榜单条目即首次观测
             })
     return head
 
 
 def _load_control_videos() -> list[dict]:
-    """读投稿 upper_videos/*.json，返回 control 视频列表。"""
+    """读投稿 upper_videos/*.json，返回 control 视频列表（vlist.play 即 T0 播放量）。"""
     control: list[dict] = []
     for f in sorted((RAW_DIR / "upper_videos").glob("*.json")):
         try:
@@ -110,6 +111,7 @@ def _load_control_videos() -> list[dict]:
                 "pubdate": v.get("created"), "duration": v.get("length"),
                 "tid": v.get("typeid"), "tname": _tname_of(v.get("typeid") or 0),
                 "owner_mid": v.get("mid"), "owner_name": v.get("author"),
+                "view_t0": v.get("play"),  # 投稿列表采集时点的实时播放量
             })
     return control
 
@@ -131,11 +133,12 @@ def _load_uppers() -> list[dict]:
 # 写库
 # ---------------------------------------------------------------------------
 _VIDEO_COLS = ("bvid, aid, cid, title, descr, pubdate, duration, tid, rid, tname, "
-               "owner_mid, owner_name, sample_group, rank_no, is_recent_12m, first_seen_batch")
+               "owner_mid, owner_name, sample_group, rank_no, is_recent_12m, "
+               "first_seen_batch, view_t0")
 
 
 def _video_row(v: dict, sample_group: str, batch_id: str) -> tuple:
-    """把视频 dict 转成 videos 表的一行参数。"""
+    """把视频 dict 转成 videos 表的一行参数（17 列，含 view_t0）。"""
     return (
         v.get("bvid"), v.get("aid"), v.get("cid"),
         _clean_text(v.get("title")), _clean_text(v.get("descr")),
@@ -145,6 +148,7 @@ def _video_row(v: dict, sample_group: str, batch_id: str) -> tuple:
         sample_group, v.get("rank_no"),
         1 if sample_group == "control" else None,
         batch_id,
+        v.get("view_t0"),
     )
 
 
@@ -153,17 +157,24 @@ def _write_videos(head: list[dict], control: list[dict], batch_id: str) -> tuple
     conn = get_connection()
     head_n = control_n = dup = 0
     try:
+        placeholders = ", ".join("?" * 17)
         for v in head:
-            conn.execute(f"INSERT OR REPLACE INTO videos ({_VIDEO_COLS}) "
-                         f"VALUES ({', '.join('?' * 16)})",
+            conn.execute(f"INSERT OR REPLACE INTO videos ({_VIDEO_COLS}) VALUES ({placeholders})",
                          _video_row(v, "head", batch_id))
             head_n += 1
         for v in control:
-            if conn.execute("SELECT 1 FROM videos WHERE bvid=?", (v.get("bvid"),)).fetchone():
-                dup += 1
+            row = conn.execute("SELECT sample_group FROM videos WHERE bvid=?",
+                               (v.get("bvid"),)).fetchone()
+            if row is not None:
+                if row["sample_group"] == "head":
+                    dup += 1  # head 优先于 control，重复时保留 head 标记
+                else:
+                    # 已有 control 行：刷新 view_t0（幂等回填，不动 first_seen_batch）
+                    conn.execute("UPDATE videos SET view_t0=? WHERE bvid=?",
+                                 (v.get("view_t0"), v.get("bvid")))
+                    control_n += 1
                 continue
-            conn.execute(f"INSERT OR IGNORE INTO videos ({_VIDEO_COLS}) "
-                         f"VALUES ({', '.join('?' * 16)})",
+            conn.execute(f"INSERT OR IGNORE INTO videos ({_VIDEO_COLS}) VALUES ({placeholders})",
                          _video_row(v, "control", batch_id))
             control_n += 1
         conn.commit()
@@ -242,6 +253,7 @@ def _print_snapshot_overview() -> None:
 # ---------------------------------------------------------------------------
 def run() -> int:
     """执行清洗入库全流程。"""
+    init_db()  # 幂等：确保表结构与数据字典一致（含 view_t0 等新增列迁移）
     batch_id = f"clean_{now_str().replace('-', '').replace(':', '').replace(' ', '')}"
     head = _load_head_videos()
     control = _load_control_videos()

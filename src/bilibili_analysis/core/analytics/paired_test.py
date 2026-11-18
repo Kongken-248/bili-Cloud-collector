@@ -16,23 +16,31 @@ from statsmodels.stats.multitest import multipletests
 
 from bilibili_analysis.core.db import get_snapshots, get_uppers, get_videos
 
-# 默认检验特征：播放量与时长取 log（偏态），互动率为派生指标
-DEFAULT_FEATURES = ("log_view", "log_duration", "engagement_rate")
+# 默认检验特征：播放量与时长取 log（偏态）；head/control 同为 view_t0（T0）口径。
+# engagement_rate 仅 head 有快照互动数据（control 的 like/coin 等不可得），不进默认配对。
+DEFAULT_FEATURES = ("log_view", "log_duration")
 
 
 def build_feature_table() -> pd.DataFrame:
-    """构造特征表：视频元信息 + 最新快照统计 + 派生特征（log/互动率）。"""
+    """构造特征表：视频元信息 + view_t0（T0 基准播放量）+ 派生特征。
+
+    view 口径：view_t0 = 首次观测时点基准播放量（head=榜单 stat.view、
+    control=vlist.play），head 与 control 同为 T0，截面比较公平（数据字典）。
+    """
     vids = get_videos()[["bvid", "owner_mid", "owner_name", "sample_group",
-                         "duration", "title", "pubdate", "tname"]]
+                         "duration", "title", "pubdate", "tname", "view_t0"]]
     snaps = get_snapshots()
-    if snaps.empty:
-        return pd.DataFrame()
-    latest = snaps.sort_values("collect_time").groupby("bvid").tail(1)
-    df = vids.merge(latest, on="bvid", how="inner")
-    df["log_view"] = np.log1p(df["view"].astype(float))
+    if not snaps.empty:
+        latest = snaps.sort_values("collect_time").groupby("bvid").tail(1)
+        df = vids.merge(latest, on="bvid", how="left", suffixes=("", "_snap"))
+    else:
+        df = vids
+    df["log_view"] = np.log1p(df["view_t0"].astype(float))
     df["log_duration"] = np.log1p(df["duration"].astype(float))
     denom = df[["like", "coin", "fav", "share"]].astype(float).sum(axis=1)
-    df["engagement_rate"] = np.where(df["view"] > 0, denom / df["view"].replace(0, np.nan), np.nan)
+    base = df["view_t0"].astype(float)
+    df["engagement_rate"] = np.where((base > 0) & denom.notna() & (denom > 0),
+                                     denom / base.replace(0, np.nan), np.nan)
     return df
 
 
@@ -48,10 +56,13 @@ def _rank_biserial(diff: np.ndarray) -> float:
     return float((w_plus - w_minus) / total) if total else float("nan")
 
 
-def paired_wilcoxon_one(feature: str, min_pairs_per_up: int = 5) -> dict:
+def paired_wilcoxon_one(feature: str, min_control_per_up: int = 5) -> dict:
     """单特征 Wilcoxon 配对检验：head vs 同 UP主 control 中位数。
 
-    min_pairs_per_up：配对不足该值的 UP主 不参与并计数（工程默认 5）。
+    配对规则（工程默认）：每条 head 视频与同 UP主 全部 control 视频的中位数配对。
+    min_control_per_up：该 UP主 的 control 数不足此值时中位数不稳定，该 UP主
+    不参与并计数（注：提示词原文「配对不足 5 对的 UP主 不参与」按此解读——
+    榜单每 UP主 通常仅 1 条 head，若按 head 数 ≥5 门槛则全体无法参与）。
     """
     df = build_feature_table()
     rows: list[dict] = []
@@ -59,9 +70,9 @@ def paired_wilcoxon_one(feature: str, min_pairs_per_up: int = 5) -> dict:
     for mid, g in df.groupby("owner_mid"):
         head_vals = g[g["sample_group"] == "head"][feature].dropna()
         ctrl_vals = g[g["sample_group"] == "control"][feature].dropna()
-        if len(ctrl_vals) == 0:
+        if len(head_vals) == 0:
             continue
-        if len(head_vals) < min_pairs_per_up:
+        if len(ctrl_vals) < min_control_per_up:
             skipped_ups += 1
             continue
         ctrl_med = float(ctrl_vals.median())
@@ -87,9 +98,16 @@ def paired_wilcoxon_one(feature: str, min_pairs_per_up: int = 5) -> dict:
 
 
 def paired_wilcoxon_table(features: tuple = DEFAULT_FEATURES) -> pd.DataFrame:
-    """多特征配对检验表 + FDR 校正（BH）。"""
+    """多特征配对检验表 + FDR 校正（BH）。
+
+    原始配对数据（head 值/control 中位数/mid，供页面差值分布图复用）
+    挂在返回 DataFrame 的 `.attrs["pairs"]`（按 feature 名索引），不进表格列。
+    """
     results = [paired_wilcoxon_one(f) for f in features]
     df = pd.DataFrame(results)
+    if "pairs" in df.columns:
+        df.attrs["pairs"] = {r["feature"]: r["pairs"] for r in results if "pairs" in r}
+        df = df.drop(columns=["pairs"])
     if "p_value" in df.columns:
         mask = df["p_value"].notna()
         if mask.sum() > 0:
