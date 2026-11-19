@@ -42,3 +42,4 @@ scripts_backup.local/
 .vscode/
 .DS_Store
 Thumbs.db
+models/
