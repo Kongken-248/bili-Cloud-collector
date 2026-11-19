@@ -15,10 +15,10 @@ from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # 项目路径（全项目唯一写法）
-# 本文件位于 src/bilibili_analysis/core/config.py，
-# parents[0]=core, parents[1]=bilibili_analysis, parents[2]=src, parents[3]=项目根。
+# 本文件位于 core/config.py，
+# parents[0]=core, parents[1]=项目根。
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # 新位置：core/ 上一级 = 项目根
 
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"

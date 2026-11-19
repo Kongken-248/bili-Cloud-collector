@@ -10,7 +10,7 @@
 禁止画「发布后天数 × 播放量」曲线或做增长建模。
 
 用法：
-    python -m bilibili_analysis.scripts.snapshot [--limit N] [--date YYYY-MM-DD]
+    python -m scripts.snapshot [--limit N] [--date YYYY-MM-DD]
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import argparse
 import json
 import sqlite3
 
-from bilibili_analysis.core.config import CLOUD_DIR, DB_PATH, RAW_DIR
-from bilibili_analysis.scripts._common import http_get, log, make_session, now_str
+from core.config import CLOUD_DIR, DB_PATH, RAW_DIR
+from scripts._common import http_get, log, make_session, now_str
 
 _VIDEO_URL = "https://api.bilibili.com/x/web-interface/view"
 

@@ -41,7 +41,7 @@ jobs:
           # 云端为海外 IP，对 B站 风控风险低，放宽限速以缩短整轮耗时
           REQUEST_INTERVAL_MIN: "0.3"
           REQUEST_INTERVAL_MAX: "0.8"
-        run: python -m bilibili_analysis.scripts.snapshot
+        run: python -m scripts.snapshot
 
       - name: 提交并推送
         run: |
