@@ -37,10 +37,28 @@ jobs:
 
       - name: 运行快照采集
         env:
-          # 云端为海外 IP，对 B站 风控风险低，放宽限速以缩短整轮耗时
-          REQUEST_INTERVAL_MIN: "0.3"
-          REQUEST_INTERVAL_MAX: "0.8"
+          # 11-19 实测：0.3~0.8s 高频请求触发 B站对海外 IP 的风控限流
+          # （两轮 cron 各仅成功 10/20 条），放宽到默认 1.0~2.5s。
+          # 请求失败时脚本按 3s→15s→60s 指数退避重试，单轮耗时可控。
+          REQUEST_INTERVAL_MIN: "1.0"
+          REQUEST_INTERVAL_MAX: "2.5"
         run: python -m scripts.snapshot
+
+      - name: 定向补采上轮失败
+        env:
+          REQUEST_INTERVAL_MIN: "1.0"
+          REQUEST_INTERVAL_MAX: "2.5"
+        run: |
+          if [ -f data/cloud/fail_log.json ]; then
+            N=$(python -c "import json; print(json.load(open('data/cloud/fail_log.json',encoding='utf-8')).get('fail_count',0))")
+            if [ "$N" -gt 0 ]; then
+              python -m scripts.snapshot --retry-failed || echo "补采失败，保留原清单"
+            else
+              echo "上轮 fail_count=$N，跳过补采"
+            fi
+          else
+            echo "无 fail_log.json，跳过补采"
+          fi
 
       - name: 提交并推送
         run: |

@@ -82,8 +82,10 @@ PARTITIONS: dict[str, int] = {
 }
 
 # 请求间隔（秒）：全局限速，请求在 [MIN, MAX] 区间随机等待
-REQUEST_INTERVAL_MIN: float = _get_float("REQUEST_INTERVAL_MIN", 1.5)
-REQUEST_INTERVAL_MAX: float = _get_float("REQUEST_INTERVAL_MAX", 3.0)
+# 快照轮默认 1.0~2.5s：兼顾整轮耗时（601 条约 18 分钟）与风控压力，
+# 云端 workflow / 本地 .env 仍可用同名环境变量覆盖。
+REQUEST_INTERVAL_MIN: float = _get_float("REQUEST_INTERVAL_MIN", 1.0)
+REQUEST_INTERVAL_MAX: float = _get_float("REQUEST_INTERVAL_MAX", 2.5)
 RETRY_TIMES: int = _get_int("RETRY_TIMES", 3)
 
 # 批次间冷却（秒）：分区之间 / UP主批次之间的额外冷却（提示词 4.3）

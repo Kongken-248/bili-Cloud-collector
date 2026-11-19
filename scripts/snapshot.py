@@ -10,7 +10,13 @@
 禁止画「发布后天数 × 播放量」曲线或做增长建模。
 
 用法：
-    python -m scripts.snapshot [--limit N] [--date YYYY-MM-DD]
+    python -m scripts.snapshot [--limit N] [--date YYYY-MM-DD] [--retry-failed]
+
+失败处理：
+    - 可重试错误（超时 / -412 风控 / 5xx）由公共层按 3s→15s→60s 指数退避重试；
+    - 永久错误（62012 稿件不存在等）不重试，直接记失败；
+    - 当轮失败清单落盘 data/cloud/fail_log.json（bvid / 错误码 / 时间），
+      下一轮可用 --retry-failed 只重采失败清单。
 """
 
 from __future__ import annotations
@@ -26,6 +32,19 @@ _VIDEO_URL = "https://api.bilibili.com/x/web-interface/view"
 
 # 快照字段（对齐数据字典 snapshots 表，`like` 为 SQLite 关键字需加引号）
 _SNAP_COLS = ["view", "like", "coin", "fav", "share", "reply", "danmaku"]
+
+# 失败清单固定路径（每轮覆盖，记录当轮失败明细）
+_FAIL_LOG = CLOUD_DIR / "fail_log.json"
+
+# 常见错误码的可读描述（fail_log 与汇总打印用）
+_ERR_DESC = {
+    62012: "稿件不可见（已删除/UP主隐藏）",
+    -404: "稿件不可见（啥都木有）",
+    -403: "访问权限不足",
+    -412: "请求被拦截（风控）",
+    62002: "稿件不可见（审核中/被锁定）",
+    "network": "网络超时/连接失败（重试后仍失败）",
+}
 
 
 def _connect() -> sqlite3.Connection:
@@ -91,12 +110,22 @@ def _save_bvid_seed(bvids: list[str]) -> None:
     )
 
 
-def fetch_stat(session, bvid: str) -> dict | None:
-    """调详情接口拿当前统计字段（view/like/coin/fav/share/reply/danmaku）。"""
-    data = http_get(session, _VIDEO_URL, {"bvid": bvid}, timeout=8)
-    if data and data.get("code") == 0:
-        return (data.get("data") or {}).get("stat") or {}
-    return None
+def fetch_stat(session, bvid: str) -> tuple[dict | None, int | str | None]:
+    """调详情接口拿当前统计字段。
+
+    返回 (stat, err)：
+    - 成功：(stat_dict, None)；
+    - 失败：(None, err)，err 为接口业务错误码（如 62012）或
+      "network"（公共层退避重试耗尽仍连不上）。
+    永久错误码不重试（公共层直接透传），可重试错误已在其内部退避重试。
+    """
+    data = http_get(session, _VIDEO_URL, {"bvid": bvid}, timeout=10)
+    if data is None:
+        return None, "network"
+    code = data.get("code")
+    if code == 0:
+        return (data.get("data") or {}).get("stat") or {}, None
+    return None, code
 
 
 def _write_snapshot(bvid: str, collect_time: str, stat: dict) -> None:
@@ -128,20 +157,62 @@ def _save_cloud_round(collect_time: str, items: list[dict]) -> None:
     )
 
 
-def run(limit: int | None, date: str | None) -> int:
+def _save_fail_log(collect_time: str, total: int, ok: int,
+                   failures: list[dict]) -> None:
+    """落盘当轮失败清单到 data/cloud/fail_log.json（每轮覆盖）。
+
+    供人工排查与 --retry-failed 下一轮定向重采；无失败也覆盖写空清单，
+    避免上一轮的旧失败清单被误当作当前状态。
+    """
+    CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    _FAIL_LOG.write_text(
+        json.dumps({
+            "collect_time": collect_time,
+            "total": total,
+            "ok": ok,
+            "fail_count": len(failures),
+            "failures": failures,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_failed_bvids() -> list[str]:
+    """读上一轮 fail_log.json 的失败 bvid 清单（--retry-failed 用）。"""
+    if not _FAIL_LOG.exists():
+        log("[retry-failed] 未找到 fail_log.json，无失败清单可重采")
+        return []
+    try:
+        d = json.loads(_FAIL_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        log("[retry-failed] fail_log.json 解析失败，放弃重采")
+        return []
+    bvids = [f.get("bvid") for f in d.get("failures", []) if f.get("bvid")]
+    log(f"[retry-failed] 上轮失败清单 {len(bvids)} 条，开始定向重采")
+    return sorted(set(bvids))
+
+
+def run(limit: int | None, date: str | None, retry_failed: bool = False) -> int:
     """执行快照采集（仅 head，本地与云端口径统一）。"""
     session = make_session()  # 公开接口，无需登录态
-    bvids = _collect_bvids()
-    _save_bvid_seed(bvids)  # 落盘 bvid 清单（先于 limit 截断）
+    if retry_failed:
+        bvids = _load_failed_bvids()
+    else:
+        bvids = _collect_bvids()
+        _save_bvid_seed(bvids)  # 落盘 bvid 清单（先于 limit 截断）
     if limit is not None:
         bvids = bvids[:limit]
     collect_time = f"{date} 00:00:00" if date else now_str()
     ok = 0
     round_items: list[dict] = []
+    failures: list[dict] = []
     for bvid in bvids:
-        stat = fetch_stat(session, bvid)
-        if stat is None:
-            log(f"[快照失败] {bvid}")
+        stat, err = fetch_stat(session, bvid)
+        if err is not None:
+            desc = _ERR_DESC.get(err, "未知错误")
+            failures.append({"bvid": bvid, "code": err, "error": desc,
+                             "time": now_str()})
+            log(f"[快照失败] {bvid} code={err} {desc}")
             continue
         _write_snapshot(bvid, collect_time, stat)
         item = {"bvid": bvid}
@@ -149,7 +220,17 @@ def run(limit: int | None, date: str | None) -> int:
         round_items.append(item)
         ok += 1
     _save_cloud_round(collect_time, round_items)
+    _save_fail_log(collect_time, len(bvids), ok, failures)
     log(f"[完成] 快照 {ok}/{len(bvids)} 条 @ {collect_time}")
+    if failures:
+        by_code: dict = {}
+        for f in failures:
+            by_code.setdefault(f["code"], []).append(f["bvid"])
+        for c, v in sorted(by_code.items(), key=lambda x: str(x[0])):
+            log(f"[失败汇总] code={c} {_ERR_DESC.get(c, '未知错误')} "
+                f"×{len(v)}: {', '.join(v)}")
+    else:
+        log("[失败汇总] 0 条，全部成功")
     return 0
 
 
@@ -158,8 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="B站 head 视频统计字段快照采集")
     parser.add_argument("--limit", type=int, default=None, help="限制快照视频数（测试用）")
     parser.add_argument("--date", type=str, default=None, help="指定快照日期（YYYY-MM-DD，测试幂等用）")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="只重采上一轮 fail_log.json 中的失败清单")
     args = parser.parse_args(argv)
-    return run(args.limit, args.date)
+    return run(args.limit, args.date, args.retry_failed)
 
 
 if __name__ == "__main__":

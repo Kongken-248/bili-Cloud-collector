@@ -23,20 +23,23 @@ from urllib.parse import urlencode
 
 import requests
 
-from bilibili_analysis.core.config import (
+from core.config import (
     RAW_DIR,
     REQUEST_INTERVAL_MAX,
     REQUEST_INTERVAL_MIN,
     SESSDATA,
 )
 
-# 统一请求头（风控基础：UA + Referer）
+# 统一请求头（风控基础：完整浏览器级 UA + Referer + Accept）
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.bilibili.com/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Origin": "https://www.bilibili.com",
 }
 
 # wbi 固定重排表（公开规则）：img_key + sub_key 混排后取前 32 位作 mixin_key
@@ -47,8 +50,15 @@ _MIXIN_KEY_ENC_TAB = [
     22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ]
 
-# 风控返回码：命中时触发冷却退避
-_RISK_CODES = {-799, -412}
+# 风控返回码：命中时触发指数退避重试。
+# -404 实测对在线视频也会出现（11-19 本机采集中 2 条 11-18 正常入库的视频
+# 返回 -404，与 -412 同属风控软拦截，视频真不存在时详情接口用 62012/62002）。
+_RISK_CODES = {-799, -412, -404}
+
+# 指数退避序列（秒）：每次重试前等待，共 3 次重试。
+# 3s → 15s → 60s：短退避跨过瞬时限流，长退避等风控窗口过期。
+# GitHub Actions 海外 IP 被风控时，1~2 秒的退避形同虚设，必须拉长。
+_BACKOFF_SCHEDULE = (3.0, 15.0, 60.0)
 
 # 全局限速状态：上一次请求完成的时间戳（进程内共享）
 _last_request_ts = 0.0
@@ -76,18 +86,18 @@ def log(msg: str) -> None:
 def make_session(with_sessdata: bool = False) -> requests.Session:
     """创建带统一请求头与 buvid3 的会话。
 
-    登录态会话额外写入 SESSDATA（仅本地，不入库不入仓），并主动访问
-    主站获取 buvid3——wbi 接口（UP主投稿等）需要 buvid3 + 登录态两者兼备，
-    仅靠 nav 接口回写 buvid3 在本环境不可靠（nav 返回 -101 时不设置）。
+    无论是否登录态，均 best-effort 访问一次 B站主页换取 buvid3 匿名设备
+    Cookie（风控基础：无 buvid3 的裸会话更容易被 -412 拦截）；首页访问
+    失败不阻断采集（详情接口无 buvid3 也可用，仅风控风险略高）。
     """
     session = requests.Session()
     session.headers.update(_HEADERS)
     if with_sessdata and SESSDATA:
         session.cookies.set("SESSDATA", SESSDATA, domain=".bilibili.com")
-        try:
-            session.get("https://www.bilibili.com/", timeout=15)
-        except Exception:
-            pass
+    try:
+        session.get("https://www.bilibili.com/", timeout=10)
+    except Exception:
+        pass  # 海外 IP 访问主页可能超时，容忍缺失 buvid3
     return session
 
 
@@ -146,16 +156,21 @@ def http_get(
     params: dict[str, Any] | None = None,
     *,
     wbi: bool = False,
-    retries: int = 3,
     timeout: int = 15,
+    backoff: tuple[float, ...] = _BACKOFF_SCHEDULE,
 ) -> dict[str, Any] | None:
-    """带限速、重试与退避的 GET 请求，返回解析后的 JSON 或 None。
+    """带限速、重试与指数退避的 GET 请求，返回解析后的 JSON 或 None。
 
-    命中风控码（-799 / -412）时按指数退避重试；多次失败返回 None，
-    不抛异常中断整条采集任务。业务错误码（如 -101）返回原始结构供上层判断。
+    重试策略（仅可重试错误）：
+    - 网络异常（超时/连接失败）、HTTP 5xx、风控码（-799 / -412）、
+      code=0 但 data 含 v_voucher（隐性风控）→ 按 backoff 序列退避重试；
+    - 其余业务错误码（如 62012 稿件不存在）为永久错误，不重试直接返回
+      原始结构供上层判断；
+    - 退避重试耗尽仍失败返回 None，不抛异常中断整条采集任务。
     """
     params = dict(params or {})
-    for attempt in range(retries):
+    attempts = len(backoff) + 1
+    for attempt in range(attempts):
         _throttle()
         try:
             req_params = dict(params)
@@ -164,21 +179,26 @@ def http_get(
                 if keys:
                     req_params = sign_wbi(req_params, keys[0], keys[1])
             resp = session.get(url, params=req_params, timeout=timeout)
+            if resp.status_code >= 500:
+                raise IOError(f"HTTP {resp.status_code}")
             data = resp.json()
             code = data.get("code")
             if code == 0:
                 # wbi 投稿等接口被风控时 code 仍为 0，但 data 只含 v_voucher
                 body = data.get("data")
                 if isinstance(body, dict) and "v_voucher" in body:
-                    time.sleep(2 ** attempt)
-                    continue
-                return data
-            if code in _RISK_CODES:
-                time.sleep(2 ** attempt)
+                    if attempt < attempts - 1:
+                        time.sleep(backoff[attempt])
+                        continue
+                    return None  # 隐性风控重试耗尽
+            if code in _RISK_CODES and attempt < attempts - 1:
+                time.sleep(backoff[attempt])
                 continue
             return data
         except Exception:
-            time.sleep(2 ** attempt)
+            if attempt < attempts - 1:
+                time.sleep(backoff[attempt])
+                continue
     return None
 
 
